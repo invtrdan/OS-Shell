@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/types.h>
 #include <sys/wait.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -21,6 +22,13 @@ volatile sig_atomic_t ctrl_c_pressed = 0;
 
 void ctrl_c_handler(int signo) {
     ctrl_c_pressed = 1;
+}
+
+// Global flag to indicate that the timer has expired
+volatile sig_atomic_t timer_expired = 0;
+
+void timer_handler(int signo) {
+    timer_expired = 1;
 }
 
 void print_shell_prompt() {
@@ -41,6 +49,11 @@ int main() {
     sa.sa_flags = 0;
     sigaction(SIGINT, &sa, NULL);
 
+    // Set up the timer (alarm) signal handler
+    sa.sa_handler = timer_handler;
+    sa.sa_flags = 0;
+    sigaction(SIGALRM, &sa, NULL);
+
     char command_line[MAX_COMMAND_LINE_LEN]; // Stores the user's input
     char cmd_bak[MAX_COMMAND_LINE_LEN];
     char *arguments[MAX_COMMAND_LINE_ARGS]; // Stores the tokenized command line input
@@ -52,6 +65,14 @@ int main() {
             if (ctrl_c_pressed) {
                 // Ctrl-C was pressed, reset the flag and continue
                 ctrl_c_pressed = 0;
+            }
+
+            if (timer_expired) {
+                // Timer expired, reset the flag, and kill the child process
+                timer_expired = 0;
+                kill(0, SIGTERM);  // Send termination signal to the process group
+                wait(NULL);  // Clean up the terminated process
+                printf("Process terminated due to timeout.\n");
             }
 
             // Read input from stdin and store it in command_line. If there's an error, exit immediately. 
@@ -130,6 +151,11 @@ int main() {
                 }
             }
         } else {
+            if (!background) {
+                // Set a timer before forking a child process
+                alarm(10);  // Set a 10-second timer
+            }
+
             // Create a child process to execute the command
             pid_t child_pid = fork();
             if (child_pid == -1) {
@@ -142,13 +168,15 @@ int main() {
                 }
             } else {
                 // This is the parent process
-                int status;
-                if (wait(&status) == -1) { // Parent process waits for the child process to complete
-                    perror("wait");
+                if (!background) {
+                    int status;
+                    if (wait(&status) == -1) { // Parent process waits for the child process to complete
+                        perror("wait");
+                    }
+                    alarm(0);  // Cancel the timer
                 }
             }
         }
-        
     }
     // This should never be reached.
     return -1;
