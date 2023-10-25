@@ -33,7 +33,6 @@ int main() {
     char *arguments[MAX_COMMAND_LINE_ARGS]; // Stores the tokenized command line input
     	
     while (true) {
-      
         do{ 
             print_shell_prompt(); // Print the shell prompt
 
@@ -65,6 +64,13 @@ int main() {
 
         if (arg_count == 0) {
             continue; // Empty command line, prompt again.
+        }
+
+        // Check for background process by inspecting the last argument
+        bool background = false;
+        if(strcmp(arguments[arg_count - 1], "&") == 0) {
+            background = true;
+            arguments[arg_count - 1] = NULL; // Remove the &
         }
 
         // Implement Built-In Commands
