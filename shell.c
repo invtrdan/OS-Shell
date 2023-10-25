@@ -16,6 +16,13 @@ char prompt[MAX_COMMAND_LINE_LEN] = "> "; // Stores the shell prompt
 char delimiters[] = " \t\r\n"; // Contains delimiters used for tokenization
 extern char **environ;
 
+// Global flag to indicate whether Ctrl-C was pressed
+volatile sig_atomic_t ctrl_c_pressed = 0;
+
+void ctrl_c_handler(int signo) {
+    ctrl_c_pressed = 1;
+}
+
 void print_shell_prompt() {
     char cwd[PATH_MAX];
     if (getcwd(cwd, sizeof(cwd)) != NULL) {
@@ -28,6 +35,12 @@ void print_shell_prompt() {
 }
 
 int main() {
+    // Set up the Ctrl-C (SIGINT) signal handler
+    struct sigaction sa;
+    sa.sa_handler = ctrl_c_handler;
+    sa.sa_flags = 0;
+    sigaction(SIGINT, &sa, NULL);
+
     char command_line[MAX_COMMAND_LINE_LEN]; // Stores the user's input
     char cmd_bak[MAX_COMMAND_LINE_LEN];
     char *arguments[MAX_COMMAND_LINE_ARGS]; // Stores the tokenized command line input
@@ -35,6 +48,11 @@ int main() {
     while (true) {
         do{ 
             print_shell_prompt(); // Print the shell prompt
+
+            if (ctrl_c_pressed) {
+                // Ctrl-C was pressed, reset the flag and continue
+                ctrl_c_pressed = 0;
+            }
 
             // Read input from stdin and store it in command_line. If there's an error, exit immediately. 
             if ((fgets(command_line, sizeof(command_line), stdin) == NULL) && ferror(stdin)) {
