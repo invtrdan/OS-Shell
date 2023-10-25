@@ -156,16 +156,98 @@ int main() {
                 alarm(10);  // Set a 10-second timer
             }
 
+            bool input_redirected = false;
+            bool output_redirected = false;
+            int input_fd = -1;
+            int output_fd = -1;
+
+            for (int i = 1; i < arg_count; i++) {
+                if (strcmp(arguments[i], "<") == 0) {
+                    if (i < arg_count - 1) {
+                        input_redirected = true;
+                        input_fd = open(arguments[i + 1], O_RDONLY);
+                        if (input_fd == -1) {
+                            perror("open");
+                        }
+                        arguments[i] = NULL; // Remove the "<" token
+                        i++;
+                    } else {
+                        fprintf(stderr, "Invalid input redirection.\n");
+                        break;
+                    }
+                } else if (strcmp(arguments[i], ">") == 0) {
+                    if (i < arg_count - 1) {
+                        output_redirected = true;
+                        output_fd = open(arguments[i + 1], O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
+                        if (output_fd == -1) {
+                            perror("open");
+                        }
+                        arguments[i] = NULL; // Remove the ">" token
+                        i++;
+                    } else {
+                        fprintf(stderr, "Invalid output redirection.\n");
+                        break;
+                    }
+                } else if (strcmp(arguments[i], "|") == 0) {
+                    if (i < arg_count - 1) {
+                        int pipe_fd[2];
+                        if (pipe(pipe_fd) == -1) {
+                            perror("pipe");
+                            break;
+                        }
+
+                        pid_t pipe_pid = fork();
+                        if (pipe_pid == -1) {
+                            perror("fork");
+                        } else if (pipe_pid == 0) {
+                            // Child process for piping
+                            close(pipe_fd[0]); // Close the reading end
+                            if (dup2(pipe_fd[1], STDOUT_FILENO) == -1) {
+                                perror("dup2");
+                            }
+                            close(pipe_fd[1]);
+                            execvp(arguments[i + 1], &arguments[i + 1]);
+                            perror("execvp");
+                            exit(EXIT_FAILURE);
+                        } else {
+                            // Parent process
+                            close(pipe_fd[1]); // Close the writing end
+                            if (dup2(pipe_fd[0], STDIN_FILENO) == -1) {
+                                perror("dup2");
+                            }
+                            close(pipe_fd[0]);
+                            execvp(arguments[0], arguments);
+                            perror("execvp");
+                            exit(EXIT_FAILURE);
+                        }
+                    } else {
+                        fprintf(stderr, "Invalid pipe usage.\n");
+                        break;
+                    }
+                }
+            }
+
             // Create a child process to execute the command
             pid_t child_pid = fork();
             if (child_pid == -1) {
                 perror("fork");
             } else if (child_pid == 0) {
                 // This is the child process
-                if (execvp(arguments[0], arguments) == -1) {
-                    perror("execvp");
-                    exit(EXIT_FAILURE);
+                if (input_redirected) {
+                    if (dup2(input_fd, STDIN_FILENO) == -1) {
+                        perror("dup2");
+                    }
+                    close(input_fd);
                 }
+                if (output_redirected) {
+                    if (dup2(output_fd, STDOUT_FILENO) == -1) {
+                        perror("dup2");
+                    }
+                    close(output_fd);
+                }
+                execvp(arguments[0], arguments);
+                perror("execvp");
+                exit(EXIT_FAILURE);
             } else {
                 // This is the parent process
                 if (!background) {
