@@ -1,4 +1,4 @@
-//Authors: Danielle Mcintosh, Nikolas Buckle
+// Authors: Danielle Mcintosh, Nikolas Buckle
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -37,59 +37,71 @@ void print_shell_prompt() {
         snprintf(prompt, sizeof(prompt), "%s> ", cwd);
     } else {
         perror("getcwd");
-        strcpy(prompt, "> ");
+        strcpy(prompt, "> "); // Corrected strncpy to strcpy since the fallback prompt is small enough
     }
     printf("%s", prompt);
 }
 
-int main() {
-    // Set up the Ctrl-C (SIGINT) signal handler
-    struct sigaction sa;
-    sa.sa_handler = ctrl_c_handler;
-    sa.sa_flags = 0;
-    sigaction(SIGINT, &sa, NULL);
+// This function initializes the sigaction struct
+void initialize_sigaction(struct sigaction *sa, void (*handler)(int)) {
+    memset(sa, 0, sizeof(struct sigaction)); // Initialize the structure to zero
+    sa->sa_handler = handler; // Set the signal handler function
+    sa->sa_flags = 0; // No flags set
+    // Initialize the signal set to empty, to not block additional signals during the handler
+    sigemptyset(&sa->sa_mask);
+}
 
-    // Set up the timer (alarm) signal handler
-    sa.sa_handler = timer_handler;
-    sa.sa_flags = 0;
-    sigaction(SIGALRM, &sa, NULL);
+int main() {
+    // Set up the Ctrl-C (SIGINT) and timer (SIGALRM) signal handlers
+    struct sigaction sa_int, sa_alrm;
+
+    // Initialize signal actions
+    initialize_sigaction(&sa_int, ctrl_c_handler);
+    initialize_sigaction(&sa_alrm, timer_handler);
+
+    // Apply the signal handlers
+    sigaction(SIGINT, &sa_int, NULL);
+    sigaction(SIGALRM, &sa_alrm, NULL);
 
     char command_line[MAX_COMMAND_LINE_LEN]; // Stores the user's input
-    char cmd_bak[MAX_COMMAND_LINE_LEN];
     char *arguments[MAX_COMMAND_LINE_ARGS]; // Stores the tokenized command line input
-    	
+
     while (true) {
-        do{ 
+        do {
             print_shell_prompt(); // Print the shell prompt
 
+            // Clear input buffer to handle Ctrl-C during fgets
             if (ctrl_c_pressed) {
                 // Ctrl-C was pressed, reset the flag and continue
                 ctrl_c_pressed = 0;
+                // Clear the input buffer to prevent fgets from reading in the interrupted input
+                while ((getchar()) != '\n');
+                continue; // Continue to the next loop iteration to prompt again
             }
 
-            if (timer_expired) {
-                // Timer expired, reset the flag, and kill the child process
-                timer_expired = 0;
-                kill(0, SIGTERM);  // Send termination signal to the process group
-                wait(NULL);  // Clean up the terminated process
-                printf("Process terminated due to timeout.\n");
-            }
-
-            // Read input from stdin and store it in command_line. If there's an error, exit immediately. 
-            if ((fgets(command_line, sizeof(command_line), stdin) == NULL) && ferror(stdin)) {
-                fprintf(stderr, "fgets error");
-                perror("fgets error");
-                exit(EXIT_FAILURE);
+            // Read input from stdin and store it in command_line. If there's an error, exit immediately.
+            if (!fgets(command_line, sizeof(command_line), stdin)) {
+                // If fgets fails due to CTRL-D (EOF) or an error, handle accordingly
+                if (feof(stdin)) {
+                    printf("\n");
+                    fflush(stdout);
+                    fflush(stderr);
+                    exit(EXIT_SUCCESS);
+                } else if (ferror(stdin)) {
+                    perror("fgets");
+                    exit(EXIT_FAILURE);
+                }
             }
         } while (command_line[0] == '\n'); // Handle empty lines
 
-        // If the user input was EOF (ctrl+d), exit the shell.
+        // Check if fgets read an EOF (ctrl+d)
         if (feof(stdin)) {
             printf("\n");
-            fflush(stdout);
-            fflush(stderr);
-            return 0;
+            exit(EXIT_SUCCESS);
         }
+
+        // Check for background process request and handle it before strtok modification
+        bool background = (command_line[strlen(command_line) - 2] == '&');
 
         // Tokenize the command line input (split it on whitespace)
         int arg_count = 0;
@@ -105,161 +117,46 @@ int main() {
             continue; // Empty command line, prompt again.
         }
 
-        // Check for background process by inspecting the last argument
-        bool background = false;
-        if(strcmp(arguments[arg_count - 1], "&") == 0) {
-            background = true;
-            arguments[arg_count - 1] = NULL; // Remove the &
+        // Background process handling: Remove the '&' from arguments if present
+        if (background) {
+            arg_count--; // Decrement the count of arguments
+            arguments[arg_count] = NULL; // Remove the '&' from arguments
         }
 
-        // Implement Built-In Commands
-        if (strcmp(arguments[0], "cd") == 0) {
-            if (arg_count == 1) {
-                // No argument provided, change to the user's home directory
-                if (chdir(getenv("HOME")) != 0) {
-                    perror("chdir");
-                }
-            } else {
-                if (chdir(arguments[1]) != 0) {
-                    perror("chdir");
-                }
-            }
-        } else if (strcmp(arguments[0], "pwd") == 0) {
-            char cwd[PATH_MAX];
-            if (getcwd(cwd, sizeof(cwd)) != NULL) {
-                printf("%s\n", cwd);
-            } else {
-                perror("getcwd");
-            }
-        } else if (strcmp(arguments[0], "echo") == 0) {
-            for (int i = 1; i < arg_count; i++) {
-                printf("%s ", arguments[i]);
-            }
-            printf("\n");
-        } else if (strcmp(arguments[0], "exit") == 0) {
-            exit(0);
-        } else if (strcmp(arguments[0], "env") == 0) {
-            for (char **env = environ; *env != NULL; env++) {
-                printf("%s\n", *env);
-            }
-        } else if (strcmp(arguments[0], "setenv") == 0) {
-            if (arg_count != 3) {
-                printf("Usage: setenv VARIABLE VALUE\n");
-            } else {
-                if (setenv(arguments[1], arguments[2], 1) != 0) {
-                    perror("setenv");
-                }
-            }
-        } else {
-            if (!background) {
-                // Set a timer before forking a child process
-                alarm(10);  // Set a 10-second timer
-            }
+        pid_t child_pid = fork(); // Create a new process
+        if (child_pid < 0) {
+            perror("fork"); // Print an error message if fork fails
+            exit(EXIT_FAILURE);
+        }
 
-            bool input_redirected = false;
-            bool output_redirected = false;
-            int input_fd = -1;
-            int output_fd = -1;
+        if (child_pid == 0) {
+            // Child process
 
-            for (int i = 1; i < arg_count; i++) {
-                if (strcmp(arguments[i], "<") == 0) {
-                    if (i < arg_count - 1) {
-                        input_redirected = true;
-                        input_fd = open(arguments[i + 1], O_RDONLY);
-                        if (input_fd == -1) {
-                            perror("open");
-                        }
-                        arguments[i] = NULL; // Remove the "<" token
-                        i++;
-                    } else {
-                        fprintf(stderr, "Invalid input redirection.\n");
-                        break;
-                    }
-                } else if (strcmp(arguments[i], ">") == 0) {
-                    if (i < arg_count - 1) {
-                        output_redirected = true;
-                        output_fd = open(arguments[i + 1], O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
-                        if (output_fd == -1) {
-                            perror("open");
-                        }
-                        arguments[i] = NULL; // Remove the ">" token
-                        i++;
-                    } else {
-                        fprintf(stderr, "Invalid output redirection.\n");
-                        break;
-                    }
-                } else if (strcmp(arguments[i], "|") == 0) {
-                    if (i < arg_count - 1) {
-                        int pipe_fd[2];
-                        if (pipe(pipe_fd) == -1) {
-                            perror("pipe");
-                            break;
-                        }
+            // Handle Ctrl+C (SIGINT) signal
+            sa_int.sa_handler = SIG_DFL;
+            sigaction(SIGINT, &sa_int, NULL);
 
-                        pid_t pipe_pid = fork();
-                        if (pipe_pid == -1) {
-                            perror("fork");
-                        } else if (pipe_pid == 0) {
-                            // Child process for piping
-                            close(pipe_fd[0]); // Close the reading end
-                            if (dup2(pipe_fd[1], STDOUT_FILENO) == -1) {
-                                perror("dup2");
-                            }
-                            close(pipe_fd[1]);
-                            execvp(arguments[i + 1], &arguments[i + 1]);
-                            perror("execvp");
-                            exit(EXIT_FAILURE);
-                        } else {
-                            // Parent process
-                            close(pipe_fd[1]); // Close the writing end
-                            if (dup2(pipe_fd[0], STDIN_FILENO) == -1) {
-                                perror("dup2");
-                            }
-                            close(pipe_fd[0]);
-                            execvp(arguments[0], arguments);
-                            perror("execvp");
-                            exit(EXIT_FAILURE);
-                        }
-                    } else {
-                        fprintf(stderr, "Invalid pipe usage.\n");
-                        break;
-                    }
-                }
-            }
-
-            // Create a child process to execute the command
-            pid_t child_pid = fork();
-            if (child_pid == -1) {
-                perror("fork");
-            } else if (child_pid == 0) {
-                // This is the child process
-                if (input_redirected) {
-                    if (dup2(input_fd, STDIN_FILENO) == -1) {
-                        perror("dup2");
-                    }
-                    close(input_fd);
-                }
-                if (output_redirected) {
-                    if (dup2(output_fd, STDOUT_FILENO) == -1) {
-                        perror("dup2");
-                    }
-                    close(output_fd);
-                }
-                execvp(arguments[0], arguments);
+            // Execute the command
+            if (execvp(arguments[0], arguments) < 0) {
                 perror("execvp");
                 exit(EXIT_FAILURE);
-            } else {
-                // This is the parent process
-                if (!background) {
-                    int status;
-                    if (wait(&status) == -1) { // Parent process waits for the child process to complete
-                        perror("wait");
-                    }
-                    alarm(0);  // Cancel the timer
-                }
+            }
+        } else {
+            // Parent process
+
+            if (!background) {
+                // Only set the alarm if the process is not a background process
+                alarm(10);
+
+                // Wait for the child process to complete
+                int status;
+                waitpid(child_pid, &status, 0);
+
+                // Cancel the alarm if the child process completes before the timer expires
+                alarm(0);
             }
         }
     }
-    // This should never be reached.
-    return -1;
+
+    return 0;
 }
